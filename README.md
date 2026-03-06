@@ -73,6 +73,24 @@ spoon.SpoonInstall:andUse("ImeControl", {
 
 </details>
 
+## 🔍 Finding App Bundle IDs
+
+To use `appRules`, you need each app's bundle identifier. Run in Terminal:
+
+```bash
+osascript -e 'id of app "Terminal"'
+# => com.apple.Terminal
+```
+
+Common examples:
+
+| App | Bundle ID |
+|-----|-----------|
+| Terminal | `com.apple.Terminal` |
+| iTerm2 | `com.googlecode.iterm2` |
+| VS Code | `com.microsoft.VSCode` |
+| Xcode | `com.apple.dt.Xcode` |
+
 ## 🏷️ Version Management (for developers)
 
 Use `version.sh` to bump the version, regenerate the zip, and commit + tag in one step:

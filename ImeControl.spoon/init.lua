@@ -10,6 +10,8 @@ obj.version = "1.0.1"
 obj.author = "masaki39"
 obj.license = "Unlicense"
 obj.__index = obj
+obj.sources = nil    -- SpoonInstall-compatible config override
+obj.appRules = nil   -- SpoonInstall-compatible config override
 
 local logger = hs.logger.new('ImeControl', 'debug')
 
@@ -65,6 +67,7 @@ local STATE = {
     timers = {},
     keyUpTimers = {},
     hotkeys = {},
+    hotkeyMap = nil,
     windowFilterSub = nil
 }
 
@@ -327,6 +330,8 @@ function obj:bindHotkeys(map)
     end
     STATE.hotkeys = {}
 
+    STATE.hotkeyMap = map
+
     if map.toggle then
         local hk = hs.hotkey.bind(map.toggle[1], map.toggle[2], toggleIME)
         table.insert(STATE.hotkeys, hk)
@@ -393,11 +398,27 @@ end
 
 function obj:start(userConfig)
     self:stop()
-    loadConfig(userConfig)
+
+    -- Merge: direct properties (SpoonInstall) → userConfig (userConfig wins)
+    local effectiveConfig = {}
+    if self.sources then effectiveConfig.sources = self.sources end
+    if self.appRules then effectiveConfig.appRules = self.appRules end
+    if userConfig then
+        for k, v in pairs(userConfig) do
+            effectiveConfig[k] = v
+        end
+    end
+    loadConfig(next(effectiveConfig) ~= nil and effectiveConfig or nil)
+
     validateConfig()
 
     STATE.running = true
     STATE.lastKnownIME = hs.keycodes.currentSourceID() or obj._defaultConfig.sources.eng
+
+    local hotkeyMap = (userConfig and userConfig.hotkeys) or STATE.hotkeyMap
+    if hotkeyMap then
+        self:bindHotkeys(hotkeyMap)
+    end
 
     -- 1. IME Change Watcher
     if obj._defaultConfig.behavior.useSourceChangedWatcher then

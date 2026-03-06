@@ -4,6 +4,7 @@ set -euo pipefail
 BUMP="${1:-patch}"
 INIT_LUA="ImeControl.spoon/init.lua"
 ZIP_PATH="Spoons/ImeControl.spoon.zip"
+SPOON_LIST="Spoons/spoon_list.json"
 
 # Read current version
 CURRENT=$(grep -oE 'obj\.version = "[^"]+"' "$INIT_LUA" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
@@ -36,13 +37,16 @@ NEW="${MAJOR}.${MINOR}.${PATCH}"
 # Update version in init.lua
 sed -i "" "s/obj\.version = \"[^\"]*\"/obj.version = \"$NEW\"/" "$INIT_LUA"
 
+# Update release in spoon_list.json
+sed -i "" "s/\"release\": \"v[^\"]*\"/\"release\": \"v$NEW\"/" "$SPOON_LIST"
+
 # Regenerate zip
 mkdir -p Spoons
 rm -f "$ZIP_PATH"
 zip -r "$ZIP_PATH" ImeControl.spoon/ > /dev/null
 
 # Commit & tag
-git add "$INIT_LUA" "$ZIP_PATH"
+git add "$INIT_LUA" "$ZIP_PATH" "$SPOON_LIST"
 git commit -m "Release v${NEW}"
 git tag "v${NEW}"
 

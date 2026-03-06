@@ -1,0 +1,8 @@
+{
+  "ImeControl": {
+    "name": "ImeControl",
+    "desc": "Robust IME (Input Method Editor) switching for Hammerspoon",
+    "release": "v1.0.1",
+    "download_url": "https://github.com/masaki39/hammerspoon-ime-control/raw/main/Spoons/ImeControl.spoon.zip"
+  }
+}

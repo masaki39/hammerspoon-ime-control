@@ -1,32 +1,48 @@
 -- =============================================================================
 -- Hammerspoon Configuration Entry Point
--- For details and license, see: https://github.com/munder-sa/hammerspoon-ime-control
+-- ImeControl Spoon Example Configuration
 -- =============================================================================
 
--- Load IME control module
-local ime = require("ime")
+hs.loadSpoon("ImeControl")
 
--- Start IME control with default settings
--- You can customize settings by passing a table to ime.start()
-ime.start({
-    -- Example customization:
+-- Start ImeControl with default settings
+spoon.ImeControl:start({
+    -- Optional: customize input sources
+    -- sources = {
+    --     eng = "com.apple.keylayout.US",
+    --     jpn = "com.apple.inputmethod.Kotoeri.Roman"
+    -- },
+
+    -- Optional: define app-specific IME rules
+    -- When these apps are focused, IME will automatically switch
+    -- appRules = {
+    --     ["com.apple.Terminal"] = "eng",
+    --     ["com.googlecode.iterm2"] = "eng",
+    --     ["com.apple.Safari"] = "jpn",
+    -- },
+
+    -- Optional: customize behavior settings
     -- behavior = {
     --     showAlert = true,
     --     alertDuration = 0.8
     -- }
 })
 
--- Automatically reload configuration when init.lua or ime.lua is updated
+-- Optional: enable keybindings
+-- Uncomment the section below to enable IME toggle and debug hotkeys
+-- spoon.ImeControl:bindHotkeys({
+--     toggle = { {"shift"}, "f12" },
+--     debug  = { {"shift"}, "f11" },
+-- })
+
+-- Auto-reload config on file changes
 local function reloadConfig(files)
-    local doReload = false
     for _, file in ipairs(files) do
         if file:sub(-4) == ".lua" then
-            doReload = true
+            hs.reload()
+            return
         end
     end
-    if doReload then
-        hs.reload()
-    end
 end
-local myWatcher = hs.pathwatcher.new(hs.configdir, reloadConfig):start()
+hs.pathwatcher.new(hs.configdir, reloadConfig):start()
 hs.alert.show("Hammerspoon Config Loaded")

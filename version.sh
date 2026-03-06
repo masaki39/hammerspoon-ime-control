@@ -34,7 +34,7 @@ esac
 NEW="${MAJOR}.${MINOR}.${PATCH}"
 
 # Update version in init.lua
-sed -i "" "s/obj\.version = \"[^]*\"/obj.version = \"$NEW\"/" "$INIT_LUA"
+sed -i "" "s/obj\.version = \"[^\"]*\"/obj.version = \"$NEW\"/" "$INIT_LUA"
 
 # Regenerate zip
 mkdir -p Spoons

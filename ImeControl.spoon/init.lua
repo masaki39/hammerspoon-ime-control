@@ -47,7 +47,6 @@ obj._defaultConfig = {
         },
 
         applyDelay = 0.05,
-        focusDelay = 0.3,
         alertDelay = 0.02,
         keyTapDelay = 0.005,
         justAppliedThreshold = 1.0
@@ -67,8 +66,7 @@ local STATE = {
     timers = {},
     keyUpTimers = {},
     hotkeys = {},
-    hotkeyMap = nil,
-    windowFilterSub = nil
+    hotkeyMap = nil
 }
 
 local function safeCall(fn)
@@ -356,11 +354,6 @@ function obj:stop()
     if STATE.appWatcher then STATE.appWatcher:stop(); STATE.appWatcher = nil end
     if STATE.systemWatcher then STATE.systemWatcher:stop(); STATE.systemWatcher = nil end
 
-    if STATE.windowFilterSub then
-        hs.window.filter.default:unsubscribe(STATE.windowFilterSub)
-        STATE.windowFilterSub = nil
-    end
-
     for _, hk in ipairs(STATE.hotkeys) do
         hk:delete()
     end
@@ -446,12 +439,6 @@ function obj:start(userConfig)
     else
         STATE.sourceChangedEnabled = false
     end
-
-    STATE.windowFilterSub = hs.window.filter.default:subscribe(hs.window.filter.windowFocused, function()
-        timerManager.start("focus", obj._defaultConfig.behavior.focusDelay, function()
-            applyIME(hs.keycodes.currentSourceID())
-        end)
-    end)
 
     STATE.appWatcher = hs.application.watcher.new(function(appName, eventType, appObject)
         if eventType == hs.application.watcher.activated then

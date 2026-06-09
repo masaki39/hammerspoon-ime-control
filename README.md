@@ -115,7 +115,8 @@ spoon.Hanten:start({
         applyDelay = 0.05,
         alertDelay = 0.02,
         keyTapDelay = 0.005,
-        justAppliedThreshold = 1.0
+        justAppliedThreshold = 1.0,
+        callDedupeThreshold = 0.2   -- suppress duplicate applyIME calls within this window (seconds)
     }
 })
 ```

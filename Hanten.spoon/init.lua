@@ -22,38 +22,53 @@ local KEYCODES = {
     f19  = 80
 }
 
-obj._defaultConfig = {
-    sources = {
-        eng = "com.apple.keylayout.ABC",
-        jpn = "com.google.inputmethod.Japanese.base"
-    },
+local CHROMIUM_BUNDLE_IDS = {
+    ["com.google.Chrome"]        = true,
+    ["com.google.Chrome.canary"] = true,
+    ["com.microsoft.Edge"]       = true,
+    ["com.brave.Browser"]        = true,
+    ["com.vivaldi.Vivaldi"]      = true,
+    ["com.operasoftware.Opera"]  = true,
+}
 
-    appRules = {},
-    defaultIME = nil,
-
-    behavior = {
-        retryInterval = 0.1,
-        retryCount = 5,
-        alertDuration = 0.5,
-        showAlert = true,
-        useSourceChangedWatcher = true,
-        useShortcutFallback = true,
-        useCjkBounce = false,
-        useChromiumNudge = false,
-        sourceSwitchShortcut = {
-            mods = {"ctrl"},
-            key  = "space",
-            delayUS = 50000,
-            interval = 0.1,
-            maxPresses = 10
+-- Returns a fresh default config table; called on each start() to prevent accumulation
+local function makeDefaultConfig()
+    return {
+        sources = {
+            eng = "com.apple.keylayout.ABC",
+            jpn = "com.google.inputmethod.Japanese.base"
         },
 
-        applyDelay = 0.05,
-        alertDelay = 0.02,
-        keyTapDelay = 0.005,
-        justAppliedThreshold = 1.0
+        appRules = {},
+        defaultIME = nil,
+
+        behavior = {
+            retryInterval = 0.1,
+            retryCount = 5,
+            alertDuration = 0.5,
+            showAlert = true,
+            useSourceChangedWatcher = true,
+            useShortcutFallback = true,
+            useCjkBounce = false,
+            useChromiumNudge = false,
+            sourceSwitchShortcut = {
+                mods = {"ctrl"},
+                key  = "space",
+                delayUS = 50000,
+                interval = 0.1,
+                maxPresses = 10
+            },
+
+            applyDelay = 0.05,
+            alertDelay = 0.02,
+            keyTapDelay = 0.005,
+            justAppliedThreshold = 1.0,
+            callDedupeThreshold = 0.2,
+        }
     }
-}
+end
+
+obj._defaultConfig = makeDefaultConfig()
 
 local STATE = {
     lastKnownIME = nil,
@@ -88,19 +103,16 @@ function timerManager.start(name, delay, fn)
     end)
 end
 
-function timerManager.every(name, interval, fn)
-    timerManager.stop(name)
-    STATE.timers[name] = hs.timer.doEvery(interval, function()
-        safeCall(fn)
-    end)
-end
-
+-- Capture t before storing so old closures cannot nil out a replacement timer
 function timerManager.doWhile(name, checkFn, actionFn, interval)
     timerManager.stop(name)
-    STATE.timers[name] = hs.timer.doWhile(
+    local t
+    t = hs.timer.doWhile(
         function()
             local shouldContinue = checkFn()
-            if not shouldContinue then STATE.timers[name] = nil end
+            if not shouldContinue and STATE.timers[name] == t then
+                STATE.timers[name] = nil
+            end
             return shouldContinue
         end,
         function()
@@ -108,6 +120,7 @@ function timerManager.doWhile(name, checkFn, actionFn, interval)
         end,
         interval
     )
+    STATE.timers[name] = t
 end
 
 function timerManager.stop(name)
@@ -156,17 +169,10 @@ local function validateConfig()
 end
 
 local function isChromium(bundleID)
-    local t = {
-        ["com.google.Chrome"] = true,
-        ["com.google.Chrome.canary"] = true,
-        ["com.microsoft.Edge"] = true,
-        ["com.brave.Browser"] = true,
-        ["com.vivaldi.Vivaldi"] = true,
-        ["com.operasoftware.Opera"] = true,
-    }
-    return bundleID ~= nil and t[bundleID] ~= nil
+    return bundleID ~= nil and CHROMIUM_BUNDLE_IDS[bundleID] ~= nil
 end
 
+-- Store {keyCode, app} so stop() can send targeted key-ups if this timer is cancelled
 local function postJISKey(keyCode, app)
     hs.eventtap.event.newKeyEvent({}, keyCode, true):post(app)
 
@@ -175,7 +181,7 @@ local function postJISKey(keyCode, app)
         hs.eventtap.event.newKeyEvent({}, keyCode, false):post(app)
         if timer then STATE.keyUpTimers[timer] = nil end
     end)
-    STATE.keyUpTimers[timer] = true
+    STATE.keyUpTimers[timer] = {keyCode = keyCode, app = app}
 end
 
 local function chromiumNudge()
@@ -240,18 +246,20 @@ local function applyIME(sourceID, force)
     local current = hs.keycodes.currentSourceID()
     local now = hs.timer.secondsSinceEpoch()
 
-    local recentlyApplied = (now - STATE.lastApplyTime) < 0.2
+    local recentlyApplied = (now - STATE.lastApplyTime) < obj._defaultConfig.behavior.callDedupeThreshold
     if not force and sourceID == current and recentlyApplied then
         return
     end
 
     logger:d(string.format("applyIME: %s (Current: %s, Last: %s, Force: %s)",
-        sourceID, tostring(current), tostring(STATE.lastKnownIME), tostring(force or "nil")))
+        sourceID, tostring(current), tostring(STATE.lastKnownIME), tostring(force)))
 
     STATE.lastApplyTime = now
 
     timerManager.stop("apply")
     timerManager.stop("enforcement")
+    timerManager.stop("cjkBounce1")
+    timerManager.stop("cjkBounce2")
 
     STATE.lastKnownIME = sourceID
 
@@ -351,6 +359,14 @@ function obj:stop()
     local wasRunning = STATE.running
     STATE.running = false
 
+    -- Drain pending key-up timers with their app targets before stopAll clears the table
+    local pendingKeyUps = STATE.keyUpTimers
+    STATE.keyUpTimers = {}
+    for t, info in pairs(pendingKeyUps) do
+        t:stop()
+        hs.eventtap.event.newKeyEvent({}, info.keyCode, false):post(info.app)
+    end
+
     timerManager.stopAll()
 
     if STATE.appWatcher then STATE.appWatcher:stop(); STATE.appWatcher = nil end
@@ -361,16 +377,16 @@ function obj:stop()
     end
     STATE.hotkeys = {}
 
+    -- Unregister the inputSourceChanged callback so it can be re-installed correctly on next start()
+    if STATE.sourceChangedInstalled then
+        hs.keycodes.inputSourceChanged(nil)
+        STATE.sourceChangedInstalled = false
+    end
     STATE.sourceChangedEnabled = false
 
     if STATE.alertUUID then
         hs.alert.closeSpecific(STATE.alertUUID)
         STATE.alertUUID = nil
-    end
-
-    local keys = {KEYCODES.eisu, KEYCODES.kana, KEYCODES.f19}
-    for _, k in ipairs(keys) do
-        hs.eventtap.event.newKeyEvent({}, k, false):post()
     end
 
     if wasRunning then
@@ -380,11 +396,24 @@ function obj:stop()
     return self
 end
 
+-- appRules is replaced entirely so start({appRules={}}) clears all rules.
+-- Other tables are merged 2 levels deep so partial overrides work, e.g.
+-- {behavior={showAlert=false}} or {behavior={sourceSwitchShortcut={key='grave'}}}.
 local function loadConfig(userConfig)
     if not userConfig then return end
     for k, v in pairs(userConfig) do
-        if type(v) == "table" and type(obj._defaultConfig[k]) == "table" then
-            for subK, subV in pairs(v) do obj._defaultConfig[k][subK] = subV end
+        if k == "appRules" then
+            obj._defaultConfig[k] = v
+        elseif type(v) == "table" and type(obj._defaultConfig[k]) == "table" then
+            for subK, subV in pairs(v) do
+                if type(subV) == "table" and type(obj._defaultConfig[k][subK]) == "table" then
+                    for subSubK, subSubV in pairs(subV) do
+                        obj._defaultConfig[k][subK][subSubK] = subSubV
+                    end
+                else
+                    obj._defaultConfig[k][subK] = subV
+                end
+            end
         else
             obj._defaultConfig[k] = v
         end
@@ -393,6 +422,10 @@ end
 
 function obj:start(userConfig)
     self:stop()
+
+    -- Reset config to defaults before applying user overrides so repeated
+    -- start() calls do not accumulate settings from previous runs
+    obj._defaultConfig = makeDefaultConfig()
 
     -- Merge: direct properties (SpoonInstall) → userConfig (userConfig wins)
     local effectiveConfig = {}
@@ -467,7 +500,8 @@ function obj:start(userConfig)
         if event == hs.caffeinate.watcher.systemDidWake or
            event == hs.caffeinate.watcher.screensDidUnlock then
             logger:i("System wake/unlock detected")
-            applyIME(hs.keycodes.currentSourceID())
+            -- currentSourceID() may return nil briefly after wake; fall back to last known
+            applyIME(hs.keycodes.currentSourceID() or STATE.lastKnownIME or obj._defaultConfig.sources.eng)
         end
     end)
     STATE.systemWatcher:start()

@@ -9,11 +9,13 @@ obj.name = "Hanten"
 obj.version = "1.0.8"
 obj.author = "masaki39"
 obj.license = "Unlicense"
-obj.__index = obj
 obj.sources = nil    -- SpoonInstall-compatible config override
 obj.appRules = nil   -- SpoonInstall-compatible config override
 obj.defaultIME = nil -- SpoonInstall-compatible config override
+obj.behavior = nil   -- SpoonInstall-compatible config override
 
+-- hs.logger requires dot syntax (colon syntax would prepend the logger table
+-- to every log line); level is re-applied from behavior.logLevel in start()
 local logger = hs.logger.new('Hanten', 'info')
 
 local KEYCODES = {
@@ -23,12 +25,17 @@ local KEYCODES = {
 }
 
 local CHROMIUM_BUNDLE_IDS = {
-    ["com.google.Chrome"]        = true,
-    ["com.google.Chrome.canary"] = true,
-    ["com.microsoft.Edge"]       = true,
-    ["com.brave.Browser"]        = true,
-    ["com.vivaldi.Vivaldi"]      = true,
-    ["com.operasoftware.Opera"]  = true,
+    ["com.google.Chrome"]         = true,
+    ["com.google.Chrome.beta"]    = true,
+    ["com.google.Chrome.dev"]     = true,
+    ["com.google.Chrome.canary"]  = true,
+    ["org.chromium.Chromium"]     = true,
+    ["com.microsoft.Edge"]        = true,
+    ["com.microsoft.edgemac"]     = true,
+    ["com.brave.Browser"]         = true,
+    ["com.vivaldi.Vivaldi"]       = true,
+    ["com.operasoftware.Opera"]   = true,
+    ["company.thebrowser.Browser"] = true,
 }
 
 -- Returns a fresh default config table; called on each start() to prevent accumulation
@@ -47,10 +54,17 @@ local function makeDefaultConfig()
             retryCount = 5,
             alertDuration = 0.5,
             showAlert = true,
+            alertLabels = {
+                eng = "Aa 英数",
+                jpn = "🇯🇵 日本語"
+            },
+            logLevel = "info",
             useSourceChangedWatcher = true,
             useShortcutFallback = true,
             useCjkBounce = false,
             useChromiumNudge = false,
+            useJISKeys = true,
+            extraChromiumBundleIDs = {},
             sourceSwitchShortcut = {
                 mods = {"ctrl"},
                 key  = "space",
@@ -79,6 +93,7 @@ local STATE = {
     sourceChangedEnabled = false,
     sourceChangedInstalled = false,
     running = false,
+    chromiumSet = nil,
 
     timers = {},
     keyUpTimers = {},
@@ -89,7 +104,7 @@ local STATE = {
 local function safeCall(fn)
     local ok, err = xpcall(fn, debug.traceback)
     if not ok then
-        logger:e(string.format("Error in timer callback: %s", err))
+        logger.e(string.format("Error in timer callback: %s", err))
     end
 end
 
@@ -149,7 +164,6 @@ end
 local function validateConfig()
     local methods = hs.keycodes.methods(true)
     local layouts = hs.keycodes.layouts(true)
-    local valid = true
 
     local function exists(id)
         for _, mID in ipairs(methods) do if mID == id then return true end end
@@ -157,19 +171,42 @@ local function validateConfig()
         return false
     end
 
-    for name, id in pairs(obj._defaultConfig.sources) do
+    local function check(label, id)
         if not exists(id) then
-            local msg = string.format("IME sourceID invalid: '%s' (%s)", name, id)
-            logger:w(msg)
+            local msg = string.format("IME sourceID invalid: %s (%s)", label, id)
+            logger.w(msg)
             hs.alert.show(msg, 3)
-            valid = false
         end
     end
-    return valid
+
+    for name, id in pairs(obj._defaultConfig.sources) do
+        check("sources." .. name, id)
+    end
+
+    -- Rules may be "eng"/"jpn" aliases (already covered above) or raw source IDs
+    local function checkRule(label, rule)
+        if rule and rule ~= "eng" and rule ~= "jpn" then
+            check(label, rule)
+        end
+    end
+
+    checkRule("defaultIME", obj._defaultConfig.defaultIME)
+    for bundleID, rule in pairs(obj._defaultConfig.appRules) do
+        checkRule("appRules." .. bundleID, rule)
+    end
+end
+
+local function buildChromiumSet()
+    local set = {}
+    for id in pairs(CHROMIUM_BUNDLE_IDS) do set[id] = true end
+    for _, id in ipairs(obj._defaultConfig.behavior.extraChromiumBundleIDs or {}) do
+        set[id] = true
+    end
+    STATE.chromiumSet = set
 end
 
 local function isChromium(bundleID)
-    return bundleID ~= nil and CHROMIUM_BUNDLE_IDS[bundleID] ~= nil
+    return bundleID ~= nil and STATE.chromiumSet ~= nil and STATE.chromiumSet[bundleID] == true
 end
 
 -- Store {keyCode, app} so stop() can send targeted key-ups if this timer is cancelled
@@ -197,11 +234,10 @@ local function chromiumNudge()
 end
 
 local function cjkBounceWorkaround(targetID)
-    if not obj._defaultConfig.behavior.useCjkBounce or targetID ~= obj._defaultConfig.sources.jpn then return end
     local sc = obj._defaultConfig.behavior.sourceSwitchShortcut
     if not sc then return end
 
-    logger:d("Starting CJK bounce workaround")
+    logger.d("Starting CJK bounce workaround")
     hs.keycodes.currentSourceID(targetID)
 
     timerManager.start("cjkBounce1", 0.03, function()
@@ -215,9 +251,9 @@ end
 
 local function fallbackByShortcut(targetID)
     local sc = obj._defaultConfig.behavior.sourceSwitchShortcut
-    if not (obj._defaultConfig.behavior.useShortcutFallback and sc) then return end
+    if not sc then return end
 
-    logger:d(string.format("Starting shortcut fallback for %s", targetID))
+    logger.d(string.format("Starting shortcut fallback for %s", targetID))
     local presses = 0
     timerManager.doWhile("shortcutFallback",
         function()
@@ -226,9 +262,9 @@ local function fallbackByShortcut(targetID)
             local shouldContinue = presses <= sc.maxPresses and current ~= targetID
             if not shouldContinue then
                 if current == targetID then
-                    logger:i(string.format("Shortcut fallback succeeded after %d presses", presses - 1))
+                    logger.i(string.format("Shortcut fallback succeeded after %d presses", presses - 1))
                 else
-                    logger:w(string.format("Shortcut fallback failed after %d presses", sc.maxPresses))
+                    logger.w(string.format("Shortcut fallback failed after %d presses", sc.maxPresses))
                 end
             end
             return shouldContinue
@@ -238,6 +274,18 @@ local function fallbackByShortcut(targetID)
         end,
         sc.interval or 0.05
     )
+end
+
+-- Run at most one workaround per failed switch: both press the same shortcut,
+-- so running them together would over-toggle. CJK bounce takes priority for
+-- the JPN target it was designed for.
+local function runFallbackWorkaround(targetID)
+    local behavior = obj._defaultConfig.behavior
+    if behavior.useCjkBounce and targetID == obj._defaultConfig.sources.jpn then
+        cjkBounceWorkaround(targetID)
+    elseif behavior.useShortcutFallback then
+        fallbackByShortcut(targetID)
+    end
 end
 
 local function applyIME(sourceID, force)
@@ -251,23 +299,26 @@ local function applyIME(sourceID, force)
         return
     end
 
-    logger:d(string.format("applyIME: %s (Current: %s, Last: %s, Force: %s)",
+    logger.d(string.format("applyIME: %s (Current: %s, Last: %s, Force: %s)",
         sourceID, tostring(current), tostring(STATE.lastKnownIME), tostring(force)))
 
     STATE.lastApplyTime = now
 
     timerManager.stop("apply")
     timerManager.stop("enforcement")
+    timerManager.stop("shortcutFallback")
     timerManager.stop("cjkBounce1")
     timerManager.stop("cjkBounce2")
 
     STATE.lastKnownIME = sourceID
 
     local forceKey = nil
-    if sourceID == obj._defaultConfig.sources.eng then
-        forceKey = KEYCODES.eisu
-    elseif sourceID == obj._defaultConfig.sources.jpn then
-        forceKey = KEYCODES.kana
+    if obj._defaultConfig.behavior.useJISKeys then
+        if sourceID == obj._defaultConfig.sources.eng then
+            forceKey = KEYCODES.eisu
+        elseif sourceID == obj._defaultConfig.sources.jpn then
+            forceKey = KEYCODES.kana
+        end
     end
 
     if forceKey then
@@ -284,12 +335,11 @@ local function applyIME(sourceID, force)
             timerManager.doWhile("enforcement",
                 function()
                     count = count + 1
-                    local current = hs.keycodes.currentSourceID()
-                    local shouldContinue = count <= obj._defaultConfig.behavior.retryCount and current ~= sourceID
+                    local currentID = hs.keycodes.currentSourceID()
+                    local shouldContinue = count <= obj._defaultConfig.behavior.retryCount and currentID ~= sourceID
 
-                    if not shouldContinue and current ~= sourceID then
-                        fallbackByShortcut(sourceID)
-                        cjkBounceWorkaround(sourceID)
+                    if not shouldContinue and currentID ~= sourceID then
+                        runFallbackWorkaround(sourceID)
                     end
 
                     return shouldContinue
@@ -305,10 +355,21 @@ local function applyIME(sourceID, force)
 end
 
 local function toggleIME()
-    logger:d("toggleIME called")
-    local current = hs.keycodes.currentSourceID()
+    logger.d("toggleIME called")
+
+    -- While a switch is in flight the OS state lags behind the requested
+    -- target, so a rapid second toggle must base itself on lastKnownIME or it
+    -- re-targets the same source instead of reverting
+    local inFlight = STATE.timers["apply"] ~= nil
+        or STATE.timers["enforcement"] ~= nil
+        or STATE.timers["shortcutFallback"] ~= nil
+        or STATE.timers["cjkBounce1"] ~= nil
+        or STATE.timers["cjkBounce2"] ~= nil
+    local current = (inFlight and STATE.lastKnownIME) or hs.keycodes.currentSourceID()
+
     local target = (current == obj._defaultConfig.sources.eng) and obj._defaultConfig.sources.jpn or obj._defaultConfig.sources.eng
-    local label  = (target == obj._defaultConfig.sources.jpn) and "🇯🇵 日本語" or "Aa 英数"
+    local labels = obj._defaultConfig.behavior.alertLabels
+    local label  = (target == obj._defaultConfig.sources.jpn) and labels.jpn or labels.eng
 
     applyIME(target, true)
 
@@ -343,13 +404,13 @@ function obj:bindHotkeys(map)
     if map.toggle then
         local hk = hs.hotkey.bind(map.toggle[1], map.toggle[2], toggleIME)
         table.insert(STATE.hotkeys, hk)
-        logger:i(string.format("Bound toggle hotkey: %s+%s", table.concat(map.toggle[1], "+"), map.toggle[2]))
+        logger.i(string.format("Bound toggle hotkey: %s+%s", table.concat(map.toggle[1], "+"), map.toggle[2]))
     end
 
     if map.debug then
         local hk = hs.hotkey.bind(map.debug[1], map.debug[2], showDebugInfo)
         table.insert(STATE.hotkeys, hk)
-        logger:i(string.format("Bound debug hotkey: %s+%s", table.concat(map.debug[1], "+"), map.debug[2]))
+        logger.i(string.format("Bound debug hotkey: %s+%s", table.concat(map.debug[1], "+"), map.debug[2]))
     end
 
     return self
@@ -390,19 +451,22 @@ function obj:stop()
     end
 
     if wasRunning then
-        logger:i("Stopped")
+        logger.i("Stopped")
     end
 
     return self
 end
 
 -- appRules is replaced entirely so start({appRules={}}) clears all rules.
+-- hotkeys is handled separately in start() and never merged into the config.
 -- Other tables are merged 2 levels deep so partial overrides work, e.g.
 -- {behavior={showAlert=false}} or {behavior={sourceSwitchShortcut={key='grave'}}}.
 local function loadConfig(userConfig)
     if not userConfig then return end
     for k, v in pairs(userConfig) do
-        if k == "appRules" then
+        if k == "hotkeys" then -- luacheck: ignore 542
+            -- skip: consumed by start(), not part of _defaultConfig
+        elseif k == "appRules" then
             obj._defaultConfig[k] = v
         elseif type(v) == "table" and type(obj._defaultConfig[k]) == "table" then
             for subK, subV in pairs(v) do
@@ -432,6 +496,7 @@ function obj:start(userConfig)
     if self.sources then effectiveConfig.sources = self.sources end
     if self.appRules then effectiveConfig.appRules = self.appRules end
     if self.defaultIME then effectiveConfig.defaultIME = self.defaultIME end
+    if self.behavior then effectiveConfig.behavior = self.behavior end
     if userConfig then
         for k, v in pairs(userConfig) do
             effectiveConfig[k] = v
@@ -439,7 +504,13 @@ function obj:start(userConfig)
     end
     loadConfig(next(effectiveConfig) ~= nil and effectiveConfig or nil)
 
+    local ok = pcall(logger.setLogLevel, obj._defaultConfig.behavior.logLevel)
+    if not ok then
+        logger.w(string.format("Invalid logLevel: %s (keeping current level)", tostring(obj._defaultConfig.behavior.logLevel)))
+    end
+
     validateConfig()
+    buildChromiumSet()
 
     STATE.running = true
     STATE.lastKnownIME = hs.keycodes.currentSourceID() or obj._defaultConfig.sources.eng
@@ -466,7 +537,7 @@ function obj:start(userConfig)
                         timerManager.stop("apply")
                         timerManager.stop("enforcement")
                     else
-                        logger:d("inputSourceChanged during switching -> keep enforcement")
+                        logger.d("inputSourceChanged during switching -> keep enforcement")
                     end
                 end
             end)
@@ -489,7 +560,7 @@ function obj:start(userConfig)
                 elseif targetRule == "jpn" then
                     targetID = obj._defaultConfig.sources.jpn
                 end
-                logger:d(string.format("App focused: %s -> applying %s", bundleID, targetID))
+                logger.d(string.format("App focused: %s -> applying %s", bundleID, targetID))
                 applyIME(targetID)
             end
         end
@@ -499,14 +570,14 @@ function obj:start(userConfig)
     STATE.systemWatcher = hs.caffeinate.watcher.new(function(event)
         if event == hs.caffeinate.watcher.systemDidWake or
            event == hs.caffeinate.watcher.screensDidUnlock then
-            logger:i("System wake/unlock detected")
+            logger.i("System wake/unlock detected")
             -- currentSourceID() may return nil briefly after wake; fall back to last known
             applyIME(hs.keycodes.currentSourceID() or STATE.lastKnownIME or obj._defaultConfig.sources.eng)
         end
     end)
     STATE.systemWatcher:start()
 
-    logger:i("Initialized")
+    logger.i("Initialized")
 
     return self
 end

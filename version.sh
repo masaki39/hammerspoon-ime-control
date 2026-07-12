@@ -6,6 +6,12 @@ INIT_LUA="Hanten.spoon/init.lua"
 ZIP_PATH="Spoons/Hanten.spoon.zip"
 DOCS_JSON="docs/docs.json"
 
+# Refuse to release from a dirty working tree so the zip matches the commit
+if [[ -n "$(git status --porcelain)" ]]; then
+    echo "Error: working tree is not clean. Commit or stash changes first." >&2
+    exit 1
+fi
+
 # Read current version
 CURRENT=$(grep -oE 'obj\.version = "[^"]+"' "$INIT_LUA" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
 
@@ -34,16 +40,21 @@ esac
 
 NEW="${MAJOR}.${MINOR}.${PATCH}"
 
+if git rev-parse -q --verify "refs/tags/v${NEW}" > /dev/null; then
+    echo "Error: tag v${NEW} already exists." >&2
+    exit 1
+fi
+
 # Update version in init.lua
 sed -i "" "s/obj\.version = \"[^\"]*\"/obj.version = \"$NEW\"/" "$INIT_LUA"
 
 # Update version in docs/docs.json
 sed -i "" "s/\"version\": \"[^\"]*\"/\"version\": \"$NEW\"/" "$DOCS_JSON"
 
-# Regenerate zip
+# Regenerate zip (exclude Finder metadata)
 mkdir -p Spoons
 rm -f "$ZIP_PATH"
-zip -r "$ZIP_PATH" Hanten.spoon/ > /dev/null
+zip -r "$ZIP_PATH" Hanten.spoon/ -x "*.DS_Store" > /dev/null
 
 # Commit & tag
 git add "$INIT_LUA" "$ZIP_PATH" "$DOCS_JSON"
@@ -51,3 +62,4 @@ git commit -m "Release v${NEW}"
 git tag "v${NEW}"
 
 echo "Released v${NEW}"
+echo "Next: git push && git push --tags"

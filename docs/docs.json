@@ -1,7 +1,7 @@
 [
   {
     "name": "Hanten",
-    "version": "1.0.8",
+    "version": "1.0.9",
     "author": "masaki39",
     "desc": "Robust IME (Input Method Editor) switching for Hammerspoon"
   }
